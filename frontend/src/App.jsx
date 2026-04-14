@@ -348,6 +348,8 @@ const STEPS = [
   { id: "summarizing",  label: "Summarizing ", icon: "✨"  },
 ];
 
+const API_BASE = import.meta.env.VITE_API_URL || "";
+
 export default function App({ user, onSignOut }) {
   // ── Main bot flow ─────────────────────────────────────────
   const [link, setLink]               = useState("");
@@ -402,7 +404,7 @@ export default function App({ user, onSignOut }) {
     try {
       const uid  = getUserId();
       if (!uid) { setHistories([]); setHistLoading(false); return; }
-      const res  = await fetch(`/summaries?uid=${encodeURIComponent(uid)}`);
+      const res  = await fetch(`${API_BASE}/summaries?uid=${encodeURIComponent(uid)}`);
       const json = await res.json();
       // Merge: server now returns meetingTitle from S3 metadata.
       // For optimistically-inserted items (not yet in S3), prefer the in-memory title.
@@ -436,7 +438,7 @@ export default function App({ user, onSignOut }) {
     try {
       const uid  = getUserId();
       if (!uid) { setHistoryItem({ error: "User not authenticated." }); setHistItemLoading(false); return; }
-      const res  = await fetch(`/summaries/${encodeURIComponent(key)}?uid=${encodeURIComponent(uid)}`);
+      const res  = await fetch(`${API_BASE}/summaries/${encodeURIComponent(key)}?uid=${encodeURIComponent(uid)}`);
       const json = await res.json();
       setHistoryItem(json);
       // Back-fill the title into the sidebar list once we have the full item
@@ -477,7 +479,7 @@ export default function App({ user, onSignOut }) {
       uid,
       ...(userTitle && { meetingName: userTitle }),
     });
-    const es = new EventSource(`/start?${params}`);
+    const es = new EventSource(`${API_BASE}/start?${params}`);
     esRef.current = es;
 
     es.addEventListener("status", (e) => {
@@ -536,7 +538,7 @@ export default function App({ user, onSignOut }) {
     if (!s3Key || !newTitle.trim()) return;
     try {
       const uid = getUserId();
-      const res = await fetch(`/summaries/${encodeURIComponent(s3Key)}/rename?uid=${encodeURIComponent(uid)}`, {
+      const res = await fetch(`${API_BASE}/summaries/${encodeURIComponent(s3Key)}/rename?uid=${encodeURIComponent(uid)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: newTitle.trim() }),
@@ -560,7 +562,7 @@ export default function App({ user, onSignOut }) {
   const handleTranslate = async (sourceSummary, sourceLang = "en-IN") => {
     setTranslating(true); setTranslateError(""); setTranslated("");
     try {
-      const res = await fetch("/translate", {
+      const res = await fetch(`${API_BASE}/translate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: sourceSummary, source_lang: sourceLang, target_lang: translateTarget }),
