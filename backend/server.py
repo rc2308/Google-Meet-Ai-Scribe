@@ -37,8 +37,7 @@ s3_client = boto3.client(
 RECALL_BASE = f"https://{os.getenv('RECALL_REGION', 'us-east-1')}.recall.ai/api/v1"
 RECALL_HEADERS = {"Authorization": f"Token {os.getenv('RECALL_API_KEY')}"}
 
-HF_API_KEY  = os.getenv("HF_API_KEY")
-HF_PROVIDER = os.getenv("HF_PROVIDER", "fireworks-ai")
+# HF_API_KEY / HF_PROVIDER removed — summarization now runs via Groq LLaMA
 
 # ── Sarvam ───────────────────────────────────────────────
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
@@ -173,11 +172,11 @@ async def transcribe(audio_url: str) -> str:
                 model="whisper-large-v3",
                 response_format="text",
                 prompt=(
-                    "Meeting discussion involving technical topics, Indian English, "
-                    "and terms like IIT, CGPA, NIT, and ISRO."
+                    "Transcript of a meeting or conversation. "
+                    "Speakers may use Indian English, technical jargon, proper nouns such as "
+                    "IIT, CGPA, NIT, ISRO, or mix English with Hindi or other Indian languages. "
+                    "Transcribe every word exactly as spoken, preserving names and numbers accurately."
                 ),
-                temperature=0.0,
-                language="en",
             )
         text = transcription if isinstance(transcription, str) else getattr(transcription, "text", "")
         print(f"Transcript done — {len(text)} characters")
@@ -349,24 +348,17 @@ async def sarvam_translate(text: str, source_lang: str, target_lang: str) -> str
 
     return "\n".join(translated)
 
-# ── gpt-oss-120b via HF ──────────────────────────────────
+# ── Summarize via Groq LLaMA 3.3-70B ────────────────────────
 async def summarize(text: str) -> str:
     truncated = text[:12000] + "\n\n[transcript truncated for length]" if len(text) > 12000 else text
-    print(f"Sending to gpt-oss-120b via HF (provider: {HF_PROVIDER})...")
+    print("Sending to Groq llama-3.3-70b-versatile for summarization...")
 
-    async with httpx.AsyncClient(timeout=180) as client:
-        res = await client.post(
-            "https://router.huggingface.co/v1/chat/completions",
-            json={
-                "model": f"openai/gpt-oss-120b:{HF_PROVIDER}",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are an expert meeting summarizer. You write accurate, human-friendly summaries that faithfully reflect what was actually said — nothing more, nothing less.",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"""Summarize the following meeting transcript into structured notes.
+    SYSTEM_PROMPT = (
+        "You are an expert meeting summarizer. You write accurate, human-friendly summaries "
+        "that faithfully reflect what was actually said — nothing more, nothing less."
+    )
+
+    USER_PROMPT = f"""Summarize the following meeting transcript into structured notes.
 
 OUTPUT FORMAT — you MUST follow this exactly:
 - The VERY FIRST line must be: MEETING_TITLE: <a concise 3-7 word title that captures the topic, e.g. "Introduction — Raunak Chhatai" or "Q1 Budget Review" or "Team Standup — Sprint 12">
@@ -396,42 +388,26 @@ WRITING RULES:
 Transcript:
 {truncated}
 
-Summary:""",
-                    },
-                ],
-                "max_tokens": 1024,
-                "temperature": 0,
-                "top_p": 1,
-            },
-            headers={
-                "Authorization": f"Bearer {HF_API_KEY}",
-                "Content-Type": "application/json",
-            },
-        )
-
-    if res.status_code != 200:
-        detail = res.json().get("error") or res.text
-        raise ValueError(f"HF API error: {detail}")
+Summary:"""
 
     try:
-        data = res.json()
-    except Exception:
-        raise ValueError(f"HF returned non-JSON: {res.text[:300]}")
-
-    print(f"HF raw response: {json.dumps(data)[:500]}")
-
-    content = (
-        (data.get("choices") or [{}])[0].get("message", {}).get("content")
-        or (data.get("choices") or [{}])[0].get("text")
-        or data.get("generated_text")
-        or data.get("text")
-        or data.get("content")
-    )
-
-    if not content:
-        raise ValueError(f"Could not extract content from HF response: {json.dumps(data)[:300]}")
-
-    return content.strip()
+        # Run synchronous Groq call in a thread so we don't block the event loop
+        response = await asyncio.to_thread(
+            groq_client.chat.completions.create,
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": USER_PROMPT},
+            ],
+            max_tokens=1024,
+            temperature=0,
+            top_p=1,
+        )
+        content = response.choices[0].message.content or ""
+        print(f"Groq summarization done — {len(content)} chars")
+        return content.strip()
+    except Exception as e:
+        raise ValueError(f"Groq summarization failed: {e}")
 
 
 # ── Extract meeting title from raw model output ───────────
