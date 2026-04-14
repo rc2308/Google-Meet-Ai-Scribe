@@ -15,13 +15,13 @@ import {
 } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCGYm8_GwPSOJKnas17m2PauJReZN6gilw",
-  authDomain: "speech-to-text-698a4.firebaseapp.com",  // must be this, not localhost
-  projectId: "speech-to-text-698a4",
-  storageBucket: "speech-to-text-698a4.firebasestorage.app",
-  messagingSenderId: "272378279755",
-  appId: "1:272378279755:web:853dd691cb0baff0729ace",
-  measurementId: "G-FVNSBSJC0H"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 const app  = initializeApp(firebaseConfig);
