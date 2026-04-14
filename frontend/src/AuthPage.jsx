@@ -334,18 +334,18 @@ export default function AuthPage() {
             className="auth-input"
           />
           {mode !== "reset" && (
-            <div className="auth-password-wrapper">
+            <div className="auth-pw-wrap">
               <input
                 type={showPw ? "text" : "password"}
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="auth-input"
+                className="auth-input auth-pw-input"
               />
               {password && (
                 <button
                   type="button"
-                  className="auth-toggle-pw"
+                  className="auth-pw-toggle"
                   onClick={() => setShowPw(!showPw)}
                 >
                   {showPw ? (
