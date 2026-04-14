@@ -173,11 +173,11 @@ async def transcribe(audio_url: str) -> str:
                 model="whisper-large-v3",
                 response_format="text",
                 prompt=(
-                    "Transcript of a meeting or conversation. "
-                    "Speakers may use Indian English, technical jargon, proper nouns such as "
-                    "IIT, CGPA, NIT, ISRO, or mix English with Hindi or other Indian languages. "
-                    "Transcribe every word exactly as spoken, preserving names and numbers accurately."
+                    "Meeting discussion involving technical topics, Indian English, "
+                    "and terms like IIT, CGPA, NIT, and ISRO."
                 ),
+                temperature=0.0,
+                language="en",
             )
         text = transcription if isinstance(transcription, str) else getattr(transcription, "text", "")
         print(f"Transcript done — {len(text)} characters")
