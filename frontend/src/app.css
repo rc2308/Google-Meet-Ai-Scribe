@@ -1243,30 +1243,148 @@ body::before {
   border-top: 1px solid var(--border);
 }
 
-/* ── Responsive ─────────────────────────────────────── */
+/* ── Responsive — Tablet (≤1024px) ─────────────────── */
+@media (max-width: 1024px) {
+  /* Narrow the sidebar a bit */
+  .sidebar {
+    width: 240px;
+    min-width: 240px;
+  }
+
+  /* Slightly shrink the container so there's breathing room */
+  .container {
+    max-width: 680px;
+  }
+
+  /* Main padding */
+  .main {
+    padding: 36px 20px 80px;
+  }
+
+  /* Logo */
+  .logo-text { font-size: 2rem; }
+  .logo-icon { font-size: 1.9rem; }
+
+  /* Cards */
+  .card { padding: 22px 20px; }
+
+  /* Pipeline — keep horizontal but tighter */
+  .pipeline { padding: 10px 8px; }
+  .pipe-step { gap: 10px; padding: 8px 6px; }
+  .pipe-icon { width: 34px; height: 34px; font-size: 0.95rem; }
+  .pipe-label { font-size: 0.82rem; }
+}
+
+/* ── Responsive — Mobile (≤768px) ──────────────────── */
 @media (max-width: 768px) {
+  /* Sidebar becomes a slide-in drawer */
   .sidebar {
     position: fixed;
     top: 0;
     left: 0;
-    height: 100vh;
+    width: 280px;
+    min-width: 280px;
+    height: 100%;
+    height: 100dvh; /* dynamic viewport height for iOS */
     transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
     z-index: 100;
   }
   .sidebar.open       { transform: translateX(0); }
   .sidebar-overlay    { display: block; }
   .sidebar-toggle     { display: flex; align-items: center; justify-content: center; }
-  .main { padding-top: 70px; }
+
+  /* Sidebar collapse button is not needed on mobile */
+  .sidebar-collapse-btn { display: none; }
+  .sidebar-expand-tab   { display: none; }
+
+  /* Main area shifts down to avoid hamburger button */
+  .main {
+    padding: 72px 16px 80px;
+  }
+
+  /* Container fills nearly full width */
+  .container {
+    max-width: 100%;
+    gap: 16px;
+  }
+
+  /* Header */
+  .header { padding: 12px 0 8px; }
+  .logo { gap: 10px; margin-bottom: 12px; }
+  .logo-text { font-size: 1.8rem; letter-spacing: -0.5px; }
+  .logo-icon { font-size: 1.8rem; }
+  .tagline { font-size: 0.88rem; }
+  .feature-pills { gap: 6px; margin-top: 12px; }
+  .feature-pill { font-size: 0.68rem; padding: 4px 10px; }
+
+  /* Cards */
+  .card { padding: 18px 16px; border-radius: 14px; }
+
+  /* Input card */
+  .input-row { flex-direction: column; gap: 10px; }
+  .btn-primary { justify-content: center; width: 100%; }
+  .meet-input { font-size: 0.9rem; padding: 13px 14px; }
+  .lang-row { flex-wrap: wrap; gap: 8px; }
+
+  /* Pipeline — switch to compact vertical layout on small screens */
+  .pipeline { flex-direction: column; gap: 2px; padding: 10px 8px; }
+  .pipe-step { padding: 8px 8px; gap: 10px; }
+  .pipe-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 25px;
+    top: calc(100% - 2px);
+    width: 1px;
+    height: 8px;
+    background: rgba(124,108,255,0.3);
+  }
+  .pipe-connector { display: none; }
+  .pipe-icon { width: 34px; height: 34px; font-size: 0.9rem; border-radius: 10px; }
+  .pipe-label { font-size: 0.82rem; }
+  .pipe-badge { font-size: 0.65rem; padding: 2px 8px; }
+
+  /* Log box */
+  .log-box { max-height: 140px; font-size: 0.76rem; }
+
+  /* Summary card */
+  .result-header { gap: 8px; flex-wrap: wrap; }
+  .result-title { font-size: 1.05rem; }
+  .copy-btn { font-size: 0.72rem; padding: 6px 10px; }
+
+  /* Transcript */
+  .transcript-toggle { padding: 16px 18px; font-size: 0.85rem; }
+  .transcript-body { padding: 14px 18px 18px; max-height: 240px; }
+
+  /* Translate */
+  .translate-controls { flex-direction: column; gap: 10px; }
+  .translate-btn { width: 100%; justify-content: center; }
+  .lang-select { min-width: 0; width: 100%; }
+
+  /* Back button */
+  .back-btn { font-size: 0.85rem; }
+
+  /* Error card */
+  .error-msg { font-size: 0.87rem; }
 }
 
-@media (max-width: 600px) {
-  .input-row           { flex-direction: column; }
-  .btn-primary         { justify-content: center; }
-  .logo-text           { font-size: 1.8rem; }
-  .result-header       { flex-wrap: wrap; }
-  .translate-controls  { flex-direction: column; }
-  .lang-row            { flex-wrap: wrap; }
-  .feature-pills       { gap: 6px; }
+/* ── Responsive — Small mobile (≤430px) ─────────────── */
+@media (max-width: 430px) {
+  .main { padding: 68px 12px 72px; }
+  .card { padding: 14px 12px; border-radius: 12px; }
+  .logo-text { font-size: 1.55rem; }
+  .logo-icon { font-size: 1.55rem; }
+  .tagline { font-size: 0.82rem; }
+  .feature-pills { display: grid; grid-template-columns: 1fr 1fr; justify-items: center; gap: 6px; }
+  .meet-input { font-size: 0.88rem; padding: 12px 12px; }
+  .btn-primary { padding: 13px 18px; font-size: 0.9rem; }
+  .result-header { flex-direction: row; justify-content: space-between; }
+  .result-title { font-size: 0.95rem; }
+  .summary-heading { font-size: 0.66rem; }
+  .summary-para { font-size: 0.84rem; }
+  .summary-bullet { font-size: 0.86rem; }
+  .progress-title { font-size: 0.95rem; }
+  .sidebar { width: 100%; min-width: 0; }
 }
 
 /* ════════════════════════════════════════════════════════
@@ -1720,3 +1838,24 @@ body::before {
   background: rgba(255,82,82,0.06);
 }
 
+
+/* ── Auth page — responsive ─────────────────────────── */
+@media (max-width: 480px) {
+  .auth-page {
+    padding: 16px 12px;
+    align-items: flex-start;
+    padding-top: 40px;
+  }
+  .auth-card {
+    padding: 28px 20px 24px;
+    border-radius: 18px;
+    max-width: 100%;
+  }
+  .auth-logo { margin-bottom: 20px; }
+  .auth-logo-text { font-size: 1.5rem; }
+  .auth-title { font-size: 1.25rem; }
+  .auth-subtitle { font-size: 0.85rem; margin-bottom: 18px; }
+  .auth-btn { padding: 12px 16px; font-size: 0.9rem; }
+  .auth-google-btn { padding: 11px 16px; font-size: 0.9rem; }
+  .auth-input { font-size: 0.9rem; padding: 11px 13px; }
+}

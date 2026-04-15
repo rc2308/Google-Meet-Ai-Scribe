@@ -37,8 +37,6 @@ s3_client = boto3.client(
 RECALL_BASE = f"https://{os.getenv('RECALL_REGION', 'us-east-1')}.recall.ai/api/v1"
 RECALL_HEADERS = {"Authorization": f"Token {os.getenv('RECALL_API_KEY')}"}
 
-HF_API_KEY  = os.getenv("HF_API_KEY")
-HF_PROVIDER = os.getenv("HF_PROVIDER", "fireworks-ai")
 
 # ── Sarvam ───────────────────────────────────────────────
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
@@ -189,50 +187,75 @@ async def transcribe(audio_url: str) -> str:
         print("Temp file(s) deleted.")
 
 # ── Sarvam STT — native language transcription (chunked for >30 s) ──
-_CHUNK_SECS = 25   # Sarvam limit is 30 s; stay under with margin
+_CHUNK_SECS = 25   # Sarvam hard limit is 30 s; stay under with margin
 
 async def _sarvam_send_chunk(client: httpx.AsyncClient, chunk_bytes: bytes,
-                              language_code: str, label: str) -> str:
-    """POST a single audio chunk to Sarvam and return its transcript."""
-    res = await client.post(
-        f"{SARVAM_BASE}/speech-to-text",
-        files={"file": (f"{label}.mp4", chunk_bytes, "audio/mp4")},
-        data={"model": "saarika:v2.5", "language_code": language_code},
-        headers=SARVAM_HEADERS,
-        timeout=120,
-    )
-    if res.status_code != 200:
-        print(f"[Sarvam] chunk {label} error {res.status_code}: {res.text}")
-        return ""
-    text = res.json().get("transcript", "")
-    print(f"[Sarvam] chunk {label}: {len(text)} chars")
-    return text
+                              language_code: str, label: str,
+                              max_retries: int = 2) -> str:
+    """POST a single WAV audio chunk to Sarvam and return its transcript.
+    Retries up to max_retries times on transient errors.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            res = await client.post(
+                f"{SARVAM_BASE}/speech-to-text",
+                files={"file": (f"{label}.wav", chunk_bytes, "audio/wav")},
+                data={"model": "saarika:v2.5", "language_code": language_code},
+                headers=SARVAM_HEADERS,
+                timeout=180,
+            )
+            if res.status_code == 200:
+                text = res.json().get("transcript", "")
+                print(f"[Sarvam] chunk {label}: {len(text)} chars")
+                return text
+            # 429 rate-limit → wait and retry
+            if res.status_code == 429 and attempt < max_retries:
+                wait = 5 * (attempt + 1)
+                print(f"[Sarvam] chunk {label}: rate-limited, retrying in {wait}s…")
+                await asyncio.sleep(wait)
+                continue
+            print(f"[Sarvam] chunk {label} error {res.status_code}: {res.text[:200]}")
+            return ""
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            if attempt < max_retries:
+                print(f"[Sarvam] chunk {label}: network error ({exc}), retrying…")
+                await asyncio.sleep(3)
+                continue
+            print(f"[Sarvam] chunk {label}: giving up after {max_retries + 1} attempts")
+            return ""
+    return ""
 
 async def _split_with_ffmpeg(tmp_path: str, chunk_dir: str) -> list[str]:
-    """Split audio file into _CHUNK_SECS segments with 2 s overlap using ffmpeg."""
+    """Split audio file into _CHUNK_SECS WAV segments (16 kHz mono) using ffmpeg.
+    Note: -segment_overlap is NOT a valid segment-muxer option; omit it.
+    Each chunk is re-encoded as 16 kHz mono PCM WAV for maximum Sarvam compatibility.
+    """
     import subprocess
     ffmpeg_exe = _get_ffmpeg_exe()
 
-    pattern = os.path.join(chunk_dir, "chunk_%04d.mp4")
+    # Produce 16 kHz mono WAV chunks — Sarvam accepts WAV reliably even for short files
+    pattern = os.path.join(chunk_dir, "chunk_%04d.wav")
     proc = subprocess.run(
         [
             ffmpeg_exe, "-y", "-i", tmp_path,
+            "-ar", "16000",      # 16 kHz sample rate
+            "-ac", "1",          # mono
+            "-c:a", "pcm_s16le", # PCM WAV
             "-f", "segment",
             "-segment_time", str(_CHUNK_SECS),
-            "-segment_overlap", "2",
-            "-c", "copy",
             "-reset_timestamps", "1",
             pattern,
         ],
-        capture_output=True, timeout=120,
+        capture_output=True, timeout=300,
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.decode()[:400])
+        raise RuntimeError(proc.stderr.decode()[:500])
     chunks = sorted(
         os.path.join(chunk_dir, f)
         for f in os.listdir(chunk_dir)
-        if f.startswith("chunk_")
+        if f.startswith("chunk_") and f.endswith(".wav")
     )
+    print(f"[Sarvam] ffmpeg produced {len(chunks)} WAV chunk(s) in {chunk_dir}")
     return chunks
 
 async def sarvam_transcribe(audio_url: str, language_code: str) -> str:
@@ -270,24 +293,27 @@ async def sarvam_transcribe(audio_url: str, language_code: str) -> str:
         except (FileNotFoundError, RuntimeError) as e:
             print(f"[Sarvam] ffmpeg unavailable ({e}); trying single-shot first")
 
-        # ── If no chunks (no ffmpeg), attempt single-shot ────
+        # ── If no chunks (ffmpeg unavailable), attempt single-shot ────
         if not chunk_paths:
+            print("[Sarvam] no chunks produced — attempting single-shot (may fail for long audio)")
             async with httpx.AsyncClient(timeout=300) as client:
                 res = await client.post(
                     f"{SARVAM_BASE}/speech-to-text",
                     files={"file": ("recording.mp4", audio_bytes, "audio/mp4")},
                     data={"model": "saarika:v2.5", "language_code": language_code},
                     headers=SARVAM_HEADERS,
+                    timeout=180,
                 )
             if res.status_code == 200:
                 text = res.json().get("transcript", "")
                 print(f"[Sarvam] single-shot done — {len(text)} chars")
                 return text
-            elif "duration exceeds" in res.text or res.status_code == 400:
+            elif res.status_code == 400 or "duration" in res.text.lower() or "too long" in res.text.lower():
                 print("[Sarvam] audio too long and ffmpeg unavailable — falling back to Groq Whisper")
                 return await transcribe(audio_url)   # Groq Whisper fallback
             else:
-                raise ValueError(f"Sarvam STT error {res.status_code}: {res.text}")
+                print(f"[Sarvam] single-shot error {res.status_code}: {res.text[:300]} — falling back to Groq Whisper")
+                return await transcribe(audio_url)
 
         # ── Transcribe each chunk in sequence ────────────────
         parts: list[str] = []
@@ -349,24 +375,19 @@ async def sarvam_translate(text: str, source_lang: str, target_lang: str) -> str
 
     return "\n".join(translated)
 
-# ── gpt-oss-120b via HF ──────────────────────────────────
+# ── Summarize via Groq LLaMA 3.3-70B ────────────────────────
 async def summarize(text: str) -> str:
-    truncated = text[:12000] + "\n\n[transcript truncated for length]" if len(text) > 12000 else text
-    print(f"Sending to gpt-oss-120b via HF (provider: {HF_PROVIDER})...")
+    # Allow up to 24 000 chars (~6 000 tokens) — important for long regional-language transcripts
+    MAX_CHARS = 24000
+    truncated = text[:MAX_CHARS] + "\n\n[transcript truncated for length]" if len(text) > MAX_CHARS else text
+    print("Sending to Groq llama-3.3-70b-versatile for summarization...")
 
-    async with httpx.AsyncClient(timeout=180) as client:
-        res = await client.post(
-            "https://router.huggingface.co/v1/chat/completions",
-            json={
-                "model": f"openai/gpt-oss-120b:{HF_PROVIDER}",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are an expert meeting summarizer. You write accurate, human-friendly summaries that faithfully reflect what was actually said — nothing more, nothing less.",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"""Summarize the following meeting transcript into structured notes.
+    SYSTEM_PROMPT = (
+        "You are an expert meeting summarizer. You write accurate, human-friendly summaries "
+        "that faithfully reflect what was actually said — nothing more, nothing less."
+    )
+
+    USER_PROMPT = f"""Summarize the following meeting transcript into structured notes.
 
 OUTPUT FORMAT — you MUST follow this exactly:
 - The VERY FIRST line must be: MEETING_TITLE: <a concise 3-7 word title that captures the topic, e.g. "Introduction — Raunak Chhatai" or "Q1 Budget Review" or "Team Standup — Sprint 12">
@@ -396,42 +417,26 @@ WRITING RULES:
 Transcript:
 {truncated}
 
-Summary:""",
-                    },
-                ],
-                "max_tokens": 1024,
-                "temperature": 0,
-                "top_p": 1,
-            },
-            headers={
-                "Authorization": f"Bearer {HF_API_KEY}",
-                "Content-Type": "application/json",
-            },
-        )
-
-    if res.status_code != 200:
-        detail = res.json().get("error") or res.text
-        raise ValueError(f"HF API error: {detail}")
+Summary:"""
 
     try:
-        data = res.json()
-    except Exception:
-        raise ValueError(f"HF returned non-JSON: {res.text[:300]}")
-
-    print(f"HF raw response: {json.dumps(data)[:500]}")
-
-    content = (
-        (data.get("choices") or [{}])[0].get("message", {}).get("content")
-        or (data.get("choices") or [{}])[0].get("text")
-        or data.get("generated_text")
-        or data.get("text")
-        or data.get("content")
-    )
-
-    if not content:
-        raise ValueError(f"Could not extract content from HF response: {json.dumps(data)[:300]}")
-
-    return content.strip()
+        # Run synchronous Groq call in a thread so we don't block the event loop
+        response = await asyncio.to_thread(
+            groq_client.chat.completions.create,
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": USER_PROMPT},
+            ],
+            max_tokens=1024,
+            temperature=0,
+            top_p=1,
+        )
+        content = response.choices[0].message.content or ""
+        print(f"Groq summarization done — {len(content)} chars")
+        return content.strip()
+    except Exception as e:
+        raise ValueError(f"Groq summarization failed: {e}")
 
 
 # ── Extract meeting title from raw model output ───────────
