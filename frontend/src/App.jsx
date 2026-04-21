@@ -338,6 +338,7 @@ const SUPPORTED_LANGUAGES = {
   "pa-IN": "Punjabi 🇮🇳",
   "ta-IN": "Tamil 🇮🇳",
   "te-IN": "Telugu 🇮🇳",
+   "unknown": "🌐 Auto-detect (Multilingual)",
 };
 
 const STEPS = [
@@ -718,7 +719,7 @@ export default function App({ user, onSignOut }) {
             </p>
             <div className="feature-pills">
               <span className="feature-pill"><span>🎙</span> Auto Record</span>
-              <span className="feature-pill"><span>🌐</span> 11 Languages</span>
+              <span className="feature-pill"><span>🌐</span> 12 Languages</span>
               <span className="feature-pill"><span>✨</span> AI Summary</span>
               <span className="feature-pill"><span>🔄</span> Translation</span>
             </div>
@@ -856,7 +857,9 @@ export default function App({ user, onSignOut }) {
                         <option key={code} value={code}>{name}</option>
                       ))}
                     </select>
-                    {language !== "en-IN" && (
+                    {language === "unknown" ? (
+                      <span className="lang-badge">Sarvam AI · Auto</span>
+                    ) : (
                       <span className="lang-badge">Sarvam AI</span>
                     )}
                   </div>
@@ -897,7 +900,9 @@ export default function App({ user, onSignOut }) {
                       <p className="log-line muted">Waiting for bot to connect…</p>
                     )}
                   </div>
-                  <button className="btn-ghost" onClick={reset}>Cancel</button>
+                  <div className="progress-actions">
+                    <button className="btn-ghost" onClick={reset}>Cancel</button>
+                  </div>
                 </div>
               )}
 

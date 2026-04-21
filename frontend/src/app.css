@@ -652,6 +652,23 @@ body::before {
   background: rgba(255,255,255,0.05);
 }
 
+/* ── Progress card actions row ──────────────────────── */
+.progress-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+/* Remove the top margin that btn-ghost normally adds — the row handles spacing */
+.progress-actions .btn-ghost { margin-top: 0; }
+
+/* ── Mobile: stack actions vertically ────────────────── */
+@media (max-width: 480px) {
+  .progress-actions { flex-direction: column; align-items: stretch; }
+  .progress-actions .btn-ghost { width: 100%; justify-content: center; }
+}
+
 .hint {
   color: var(--muted);
   font-size: 0.85rem;

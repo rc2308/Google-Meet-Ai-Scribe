@@ -55,25 +55,28 @@ SUPPORTED_LANGUAGES: dict[str, str] = {
     "pa-IN": "Punjabi",
     "ta-IN": "Tamil",
     "te-IN": "Telugu",
+    "unknown": "Auto-detect (Multilingual)",
 }
 
 # ── Status map ───────────────────────────────────────────
-TERMINAL_OK = {"done", "call_ended", "recording_done", "analysis_done", "media_expired"}
-TERMINAL_FAIL = {"fatal", "error", "recording_permission_denied", "bot_kicked", "rejected"}
+# bot_kicked is TERMINAL_OK: it's a normal terminal state (e.g. host ended the call)
+TERMINAL_OK   = {"done", "call_ended", "recording_done", "analysis_done", "media_expired", "bot_kicked"}
+TERMINAL_FAIL = {"fatal", "error", "recording_permission_denied", "rejected"}
 
 def map_status(status: str) -> dict:
     mapping = {
-        "ready":                      ("joining",    "🤖 Bot is ready — attempting to join the call…"),
-        "joining_call":               ("joining",    "🔗 Bot is joining the meeting…"),
-        "in_waiting_room":            ("joining",    "⏳ Bot is in the waiting room — please admit it!"),
-        "in_call_not_recording":      ("recording",  "📞 Bot joined the call — starting recording…"),
-        "recording_permission_allowed": ("recording","✅ Recording permission granted!"),
-        "recording_permission_denied":  ("recording","❌ Recording permission denied by host."),
-        "in_call_recording":          ("recording",  "🔴 Bot is actively recording the meeting…"),
-        "recording_done":             ("processing", "💾 Recording finished — processing audio…"),
-        "call_ended":                 ("processing", "📵 Call ended — waiting for recording upload…"),
-        "done":                       ("processing", "✅ Recall processing complete. Fetching audio…"),
-        "analysis_done":              ("processing", "🔍 Analysis done. Fetching audio…"),
+        "ready":                        ("joining",    "🤖 Bot is ready — attempting to join the call…"),
+        "joining_call":                 ("joining",    "🔗 Bot is joining the meeting…"),
+        "in_waiting_room":              ("joining",    "⏳ Bot is in the waiting room — please admit it!"),
+        "in_call_not_recording":        ("recording",  "📞 Bot joined the call — starting recording…"),
+        "recording_permission_allowed": ("recording",  "✅ Recording permission granted!"),
+        "recording_permission_denied":  ("recording",  "❌ Recording permission denied by host."),
+        "in_call_recording":            ("recording",  "🔴 Bot is actively recording the meeting…"),
+        "recording_done":               ("processing", "💾 Recording finished — processing audio…"),
+        "call_ended":                   ("processing", "📵 Call ended — waiting for recording upload…"),
+        "bot_kicked":                   ("processing", "⏏ Bot left the meeting — waiting for recording upload…"),
+        "done":                         ("processing", "✅ Recall processing complete. Fetching audio…"),
+        "analysis_done":                ("processing", "🔍 Analysis done. Fetching audio…"),
     }
     step, msg = mapping.get(status, ("joining", f"ℹ️ Bot status: {status}"))
     return {"step": step, "msg": msg}
@@ -99,7 +102,10 @@ async def get_bot(bot_id: str) -> dict:
         res.raise_for_status()
         return res.json()
 
-# ── Audio conversion helper ───────────────────────────────
+
+# ── Sarvam STT — native language transcription (chunked for >30 s) ──
+_CHUNK_SECS = 25   # Sarvam hard limit is 30 s; stay under with margin
+
 def _get_ffmpeg_exe() -> str:
     """Return path to ffmpeg binary (imageio-ffmpeg if available, else system)."""
     try:
@@ -107,87 +113,6 @@ def _get_ffmpeg_exe() -> str:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except ImportError:
         return "ffmpeg"
-
-def convert_to_wav(input_path: str) -> str:
-    """
-    Convert any audio/video file to a 16 kHz mono WAV that Whisper loves.
-    Returns the path to the new WAV file (caller must delete it).
-    """
-    import subprocess
-    ffmpeg_exe = _get_ffmpeg_exe()
-    wav_path = input_path.replace(Path(input_path).suffix, "_16k.wav")
-    proc = subprocess.run(
-        [
-            ffmpeg_exe, "-y",
-            "-i", input_path,
-            "-ar", "16000",   # 16 kHz sample rate — Whisper's native rate
-            "-ac", "1",       # mono
-            "-c:a", "pcm_s16le",
-            wav_path,
-        ],
-        capture_output=True,
-        timeout=300,
-    )
-    if proc.returncode != 0:
-        # Conversion failed — log and return original path as fallback
-        print(f"[ffmpeg convert] warning: {proc.stderr.decode()[:300]}")
-        return input_path
-    print(f"[ffmpeg convert] → {wav_path}")
-    return wav_path
-
-# ── Whisper via Groq ─────────────────────────────────────
-async def transcribe(audio_url: str) -> str:
-    print(f"Downloading audio from: {audio_url}")
-
-    is_presigned = "AWSAccessKeyId" in audio_url or "X-Amz-Signature" in audio_url
-    headers = {} if is_presigned else RECALL_HEADERS
-
-    async with httpx.AsyncClient(timeout=300) as client:
-        res = await client.get(audio_url, headers=headers, follow_redirects=True)
-        res.raise_for_status()
-        audio_bytes = res.content
-
-    size_mb = len(audio_bytes) / 1024 / 1024
-    print(f"Downloaded: {size_mb:.2f} MB")
-
-    if len(audio_bytes) < 1000:
-        raise ValueError(f"Download returned non-audio data: {audio_bytes[:200]}")
-
-    # Write raw download to temp file
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        tmp.write(audio_bytes)
-        raw_path = tmp.name
-
-    # Convert to 16 kHz mono WAV for best Whisper accuracy
-    wav_path = convert_to_wav(raw_path)
-    converted = wav_path != raw_path   # True if ffmpeg succeeded
-
-    try:
-        print("Sending to Groq Whisper...")
-        filename = "recording.wav" if converted else "recording.mp4"
-        with open(wav_path, "rb") as f:
-            transcription = groq_client.audio.transcriptions.create(
-                file=(filename, f),
-                model="whisper-large-v3",
-                response_format="text",
-                prompt=(
-                    "Transcript of a meeting or conversation. "
-                    "Speakers may use Indian English, technical jargon, proper nouns such as "
-                    "IIT, CGPA, NIT, ISRO, or mix English with Hindi or other Indian languages. "
-                    "Transcribe every word exactly as spoken, preserving names and numbers accurately."
-                ),
-            )
-        text = transcription if isinstance(transcription, str) else getattr(transcription, "text", "")
-        print(f"Transcript done — {len(text)} characters")
-        return text
-    finally:
-        Path(raw_path).unlink(missing_ok=True)
-        if converted:
-            Path(wav_path).unlink(missing_ok=True)
-        print("Temp file(s) deleted.")
-
-# ── Sarvam STT — native language transcription (chunked for >30 s) ──
-_CHUNK_SECS = 25   # Sarvam hard limit is 30 s; stay under with margin
 
 async def _sarvam_send_chunk(client: httpx.AsyncClient, chunk_bytes: bytes,
                               language_code: str, label: str,
@@ -259,9 +184,9 @@ async def _split_with_ffmpeg(tmp_path: str, chunk_dir: str) -> list[str]:
     return chunks
 
 async def sarvam_transcribe(audio_url: str, language_code: str) -> str:
-    """Download audio and transcribe with Sarvam saarika:v2.5 (Indian languages).
-    Automatically chunks audio longer than 25 s to stay within the API limit.
-    Falls back to Groq Whisper if chunking is unavailable.
+    """Download audio and transcribe with Sarvam saarika:v2.5.
+    Supports all 11 Indian languages + English + multilingual auto-detect (language_code='unknown').
+    Automatically chunks audio into 25 s segments to stay within the API limit.
     """
     print(f"[Sarvam] downloading audio for language={language_code}")
     is_presigned = "AWSAccessKeyId" in audio_url or "X-Amz-Signature" in audio_url
@@ -308,12 +233,11 @@ async def sarvam_transcribe(audio_url: str, language_code: str) -> str:
                 text = res.json().get("transcript", "")
                 print(f"[Sarvam] single-shot done — {len(text)} chars")
                 return text
-            elif res.status_code == 400 or "duration" in res.text.lower() or "too long" in res.text.lower():
-                print("[Sarvam] audio too long and ffmpeg unavailable — falling back to Groq Whisper")
-                return await transcribe(audio_url)   # Groq Whisper fallback
             else:
-                print(f"[Sarvam] single-shot error {res.status_code}: {res.text[:300]} — falling back to Groq Whisper")
-                return await transcribe(audio_url)
+                raise ValueError(
+                    f"Sarvam single-shot failed ({res.status_code}): {res.text[:300]}. "
+                    "ffmpeg is required for audio longer than 25 seconds."
+                )
 
         # ── Transcribe each chunk in sequence ────────────────
         parts: list[str] = []
@@ -383,35 +307,38 @@ async def summarize(text: str) -> str:
     print("Sending to Groq llama-3.3-70b-versatile for summarization...")
 
     SYSTEM_PROMPT = (
-        "You are an expert meeting summarizer. You write accurate, human-friendly summaries "
-        "that faithfully reflect what was actually said — nothing more, nothing less."
+        "You are an expert meeting summarizer for multilingual meetings. "
+        "The transcript may contain English, Hindi, or any other Indian language, "
+        "or a mix of multiple languages (code-switching, e.g. Hinglish). "
+        "Understand all languages present and write the summary ALWAYS in clear English."
     )
 
     USER_PROMPT = f"""Summarize the following meeting transcript into structured notes.
+The transcript may be in English, Hindi, or mixed languages — always write your summary in English.
 
 OUTPUT FORMAT — you MUST follow this exactly:
-- The VERY FIRST line must be: MEETING_TITLE: <a concise 3-7 word title that captures the topic, e.g. "Introduction — Raunak Chhatai" or "Q1 Budget Review" or "Team Standup — Sprint 12">
+- The VERY FIRST line must be: MEETING_TITLE: <a concise 3-7 word title in English, e.g. "Introduction — Raunak Chhatai" or "Q1 Budget Review">
 - After the title line, output the sections below
 - Every section MUST start with its ## heading on its own line
 - Each section body is a single flowing prose paragraph (NO bullet points, NO numbered lists)
 - ALWAYS output the ## Overview section — it is mandatory
 - Only output ## Key Discussion Points, ## Decisions Made, ## Action Items, ## Next Steps if the transcript has content for them
-- Do NOT skip the ## heading line — even for a one-paragraph summary, the heading must appear
+- Do NOT skip the ## heading line
 
 EXAMPLE of correct output format:
 MEETING_TITLE: Introduction — John Smith
 ## Overview
-John Smith introduced himself as a third-year computer science student at MIT. He mentioned his interest in machine learning and his hometown of Boston.
+John Smith introduced himself as a third-year computer science student at MIT.
 
 ## Decisions Made
-John decided to pursue an internship at a local startup over the summer rather than continuing his research position.
+John decided to pursue an internship at a local startup over the summer.
 
 WRITING RULES:
-- Introduce each speaker by full name on first mention, then use pronouns (he/she/they) naturally
-- Do NOT start consecutive sentences with the same name
+- If speakers switch between languages, capture the meaning faithfully in English
+- Introduce each speaker by full name on first mention, then use pronouns naturally
 - Do NOT invent or infer anything not clearly stated in the transcript
 - Reproduce all names, institutions, numbers, and statistics exactly as spoken
-- Correct filler words (um, uh, repeated words) silently without changing meaning
+- Correct filler words (um, uh, acha, haan, repeated words) silently without changing meaning
 - Return ONLY the formatted summary — no preamble, no sign-off
 
 Transcript:
@@ -517,7 +444,12 @@ async def start(
         try:
             bot = await create_bot(meet_link)
             bot_id = bot["id"]
-            yield sse("status", {"step": "joining", "message": f"✅ Bot created (ID: {bot_id}) — joining meeting now…"})
+            # Embed botId in the status payload — more reliable than a separate named event
+            yield sse("status", {
+                "step": "joining",
+                "message": "\u2705 Bot created \u2014 joining meeting now\u2026",
+                "botId": bot_id,
+            })
         except Exception as e:
             yield sse("error", {"message": f"Failed to create bot: {str(e)}"})
             return
@@ -547,6 +479,7 @@ async def start(
                 last_status = recall_status
                 print(f"[{i+1}] Status → {recall_status}")
 
+
             mapped = map_status(recall_status)
             yield sse("status", {"step": mapped["step"], "message": mapped["msg"]})
 
@@ -559,7 +492,22 @@ async def start(
                 waiting_room_count = 0
 
             if recall_status in TERMINAL_FAIL:
-                yield sse("error", {"message": f"Bot failed: {recall_status}."})
+                # Log full Recall.ai bot state for diagnosis
+                changes_log = data.get("status_changes", [])[-3:]
+                error_detail = data.get("error_message") or data.get("error") or ""
+                print(f"[TERMINAL_FAIL] status={recall_status}")
+                print(f"[TERMINAL_FAIL] last 3 status changes: {json.dumps(changes_log, indent=2)}")
+                if error_detail:
+                    print(f"[TERMINAL_FAIL] error from Recall: {error_detail}")
+
+                detail = f" ({error_detail})" if error_detail else ""
+                msg = (
+                    f"Bot couldn't join the meeting{detail}. "
+                    "Make sure the Google Meet is currently active and open."
+                    if recall_status == "fatal"
+                    else f"Bot stopped: {recall_status}."
+                )
+                yield sse("error", {"message": msg})
                 return
 
             if recall_status in TERMINAL_OK or (
@@ -617,19 +565,20 @@ async def start(
             yield sse("error", {"message": "No recording URL found after 90 seconds. Check your Recall.ai dashboard."})
             return
 
-        # Step 3: Transcribe (Groq Whisper for English, Sarvam for Indian languages)
+        # Step 3: Transcribe via Sarvam AI (all languages, including multilingual auto-detect)
         lang_name = SUPPORTED_LANGUAGES.get(language, language)
-        is_indian = language != "en-IN" and language in SUPPORTED_LANGUAGES
-        if is_indian:
-            yield sse("status", {"step": "transcribing", "message": f"🌐 Transcribing in {lang_name} via Sarvam AI…"})
+        # "unknown" = Sarvam's auto-detect mode for multilingual/code-mixed meetings
+        sarvam_lang = language if language in SUPPORTED_LANGUAGES else "unknown"
+        if language == "unknown":
+            yield sse("status", {"step": "transcribing",
+                                  "message": "🌐 Auto-detecting languages via Sarvam AI (multilingual mode)…"})
         else:
-            yield sse("status", {"step": "transcribing", "message": "🔊 Audio found. Converting & sending to Whisper…"})
+            yield sse("status", {"step": "transcribing",
+                                  "message": f"🎙 Transcribing in {lang_name} via Sarvam AI…"})
         try:
-            if is_indian:
-                transcript = await sarvam_transcribe(recording_url, language)
-            else:
-                transcript = await transcribe(recording_url)
-            yield sse("status", {"step": "transcribing", "message": f"✅ Transcript ready ({len(transcript)} chars)…"})
+            transcript = await sarvam_transcribe(recording_url, sarvam_lang)
+            yield sse("status", {"step": "transcribing",
+                                  "message": f"✅ Transcript ready ({len(transcript)} chars)…"})
             yield sse("transcript", {"text": transcript})
         except Exception as e:
             yield sse("error", {"message": f"Transcription failed: {e}"})
@@ -695,6 +644,7 @@ async def bot_status(bot_id: str):
         return await get_bot(bot_id)
     except Exception as e:
         return {"error": str(e)}
+
 
 # ── /summaries  — list all saved summaries from S3 ────────
 @app.get("/summaries")
